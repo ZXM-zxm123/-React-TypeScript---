@@ -1,6 +1,6 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { IncomingMessage } from 'http';
-import { roomManager, Room, User } from './room';
+import { roomManager, Room, User, PendingEdit } from './room';
 import axios from 'axios';
 
 const JAVA_SERVICE_URL = process.env.JAVA_SERVICE_URL || 'http://localhost:8080';
@@ -63,6 +63,9 @@ async function handleMessage(ws: WebSocket, message: WSMessage, clientInfo: Clie
       break;
     case 'kick-user':
       handleKickUser(message, clientInfo);
+      break;
+    case 'resolve-conflict':
+      await handleResolveConflict(ws, message, clientInfo);
       break;
   }
 }
@@ -160,9 +163,53 @@ async function handleCellUpdate(ws: WebSocket, message: WSMessage, clientInfo: C
     return;
   }
 
-  const { row, col, value } = message.payload;
+  const { row, col, value, expectVersion, timestamp } = message.payload;
   const formula = typeof value === 'string' && value.startsWith('=') ? value : undefined;
+  const room = roomManager.getRoom(clientInfo.roomId);
+  const user = room?.users.get(clientInfo.userId);
 
+  if (!room || !user) {
+    sendError(ws, 'Room or user not found');
+    return;
+  }
+
+  // 检测冲突
+  const conflictCheck = roomManager.checkAndDetectConflict(
+    clientInfo.roomId,
+    row,
+    col,
+    clientInfo.userId,
+    timestamp || Date.now(),
+    expectVersion
+  );
+
+  if (conflictCheck.hasConflict) {
+    // 发现冲突，存储待处理编辑并发送冲突提示
+    const pendingEdit = roomManager.storePendingEdit(
+      clientInfo.roomId,
+      row,
+      col,
+      value,
+      formula,
+      clientInfo.userId,
+      user.name
+    );
+
+    send(ws, {
+      type: 'cell-conflict',
+      payload: {
+        row,
+        col,
+        pendingEdit,
+        currentValue: conflictCheck.currentCell,
+        existingPendingEdit: conflictCheck.pendingEdit
+      }
+    });
+
+    return;
+  }
+
+  // 没有冲突，正常更新
   let calculatedValue: string | number | undefined;
   if (formula) {
     try {
@@ -179,7 +226,7 @@ async function handleCellUpdate(ws: WebSocket, message: WSMessage, clientInfo: C
     }
   }
 
-  const cellData = roomManager.updateCell(clientInfo.roomId, row, col, value, formula);
+  const cellData = roomManager.updateCell(clientInfo.roomId, row, col, value, formula, clientInfo.userId);
 
   broadcastToRoom(clientInfo.roomId, {
     type: 'cell-change',
@@ -189,9 +236,60 @@ async function handleCellUpdate(ws: WebSocket, message: WSMessage, clientInfo: C
       value,
       formula,
       calculatedValue,
-      userId: clientInfo.userId
+      userId: clientInfo.userId,
+      version: cellData?.version
     }
   }, ws);
+}
+
+async function handleResolveConflict(ws: WebSocket, message: WSMessage, clientInfo: ClientInfo): Promise<void> {
+  if (!clientInfo.userId || !clientInfo.roomId) {
+    sendError(ws, 'Not in a room');
+    return;
+  }
+
+  const { row, col, keepLocal, mergeValue } = message.payload;
+  
+  const resolvedCell = roomManager.resolveConflict(
+    clientInfo.roomId,
+    row,
+    col,
+    keepLocal,
+    mergeValue
+  );
+
+  if (resolvedCell) {
+    let calculatedValue: string | number | undefined;
+    if (resolvedCell.formula) {
+      try {
+        const cellValues = roomManager.getCellValues(clientInfo.roomId);
+        const response = await axios.post(`${JAVA_SERVICE_URL}/api/evaluate`, {
+          expression: resolvedCell.formula,
+          cells: cellValues
+        });
+        calculatedValue = response.data.result;
+        roomManager.setCellCalculatedValue(clientInfo.roomId, row, col, calculatedValue);
+      } catch (error) {
+        console.error('Failed to evaluate formula:', error);
+        calculatedValue = 0;
+      }
+    }
+
+    // 向房间内所有用户广播最终结果
+    broadcastToRoom(clientInfo.roomId, {
+      type: 'cell-change',
+      payload: {
+        row,
+        col,
+        value: resolvedCell.value,
+        formula: resolvedCell.formula,
+        calculatedValue,
+        userId: clientInfo.userId,
+        version: resolvedCell.version,
+        isConflictResolve: true
+      }
+    });
+  }
 }
 
 function handleKickUser(message: WSMessage, clientInfo: ClientInfo): void {

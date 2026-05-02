@@ -9,6 +9,9 @@ export interface CellData {
   value: string | number;
   formula?: string;
   calculatedValue?: string | number;
+  version?: number;
+  lastModified?: number;
+  lastModifiedBy?: string;
 }
 
 export interface Room {
@@ -37,7 +40,34 @@ export interface EditHistoryEntry {
 export interface GridState {
   cells: Map<string, CellData>;
   users: User[];
-  cursors: Map<string, { row: number; col: number; color: string }>;
+  cursors: Map<string, { row: number; col: number }>;
   selectedCell: { row: number; col: number } | null;
   isEditing: boolean;
+}
+
+export interface PendingEdit {
+  id: string;
+  roomId: string;
+  row: number;
+  col: number;
+  value: string | number;
+  formula?: string;
+  userId: string;
+  userName: string;
+  timestamp: number;
+}
+
+export interface CellConflict {
+  row: number;
+  col: number;
+  pendingEdit: PendingEdit;
+  currentValue: CellData;
+  existingPendingEdit?: PendingEdit;
+}
+
+export interface LocalCellState {
+  row: number;
+  col: number;
+  value: string | number;
+  localVersion?: number;
 }
