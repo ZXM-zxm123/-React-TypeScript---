@@ -168,13 +168,15 @@ function App() {
   }, [userName, roomId, joinRoom]);
 
   const handleLeaveRoom = useCallback(() => {
+    // 先发送空的光标位置
+    updateCursor(null, null);
     leaveRoom();
     setView('join');
     setRoom(null);
     setRoomId('');
     setSelectedCell(null);
     setEditingCell(null);
-  }, [leaveRoom]);
+  }, [leaveRoom, updateCursor]);
 
   const handleKickUser = useCallback(
     (userId: string) => {
