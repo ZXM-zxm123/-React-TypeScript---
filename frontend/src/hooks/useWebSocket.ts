@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { WSMessage, Room, User } from '../types';
+import { WSMessage, Room, User, LocalCellState } from '../types';
 
 const WS_URL = process.env.VITE_WS_URL || 'ws://localhost:3001';
 
@@ -86,6 +86,36 @@ export function useWebSocket({ onMessage, onConnect, onDisconnect }: UseWebSocke
     });
   }, [send]);
 
+  const updateCellWithVersion = useCallback((
+    row: number, 
+    col: number, 
+    value: string | number, 
+    expectVersion?: number
+  ) => {
+    send({
+      type: 'cell-update',
+      payload: { 
+        row, 
+        col, 
+        value, 
+        expectVersion,
+        timestamp: Date.now()
+      }
+    });
+  }, [send]);
+
+  const resolveConflict = useCallback((
+    row: number,
+    col: number,
+    keepLocal: boolean,
+    mergeValue?: string | number
+  ) => {
+    send({
+      type: 'resolve-conflict',
+      payload: { row, col, keepLocal, mergeValue }
+    });
+  }, [send]);
+
   const kickUser = useCallback((targetUserId: string) => {
     send({
       type: 'kick-user',
@@ -108,6 +138,8 @@ export function useWebSocket({ onMessage, onConnect, onDisconnect }: UseWebSocke
     leaveRoom,
     updateCursor,
     updateCell,
+    updateCellWithVersion,
+    resolveConflict,
     kickUser
   };
 }
