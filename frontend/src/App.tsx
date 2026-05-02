@@ -2,9 +2,10 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Grid } from './components/Grid';
 import { Toolbar } from './components/Toolbar';
+import { ConflictResolver } from './components/ConflictResolver';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useLocalStorage } from './hooks/useLocalStorage';
-import { CellData, Room, User, WSMessage } from './types';
+import { CellData, Room, User, WSMessage, CellConflict } from './types';
 import { getCellId } from './utils/formulaParser';
 
 type AppView = 'join' | 'room';
@@ -21,6 +22,8 @@ function App() {
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [currentConflict, setCurrentConflict] = useState<CellConflict | null>(null);
+  const [localCellVersions, setLocalCellVersions] = useState<Map<string, number>>(new Map());
 
   const { history, addEntry } = useLocalStorage(view === 'room' ? room?.id ?? null : null);
 
@@ -34,19 +37,20 @@ function App() {
         setView('room');
 
         const cellsMap = new Map<string, CellData>();
+        const versionsMap = new Map<string, number>();
         for (let row = 0; row < 20; row++) {
           for (let col = 0; col < 20; col++) {
             const cellId = getCellId(col, row);
-            cellsMap.set(cellId, { value: '' });
+            cellsMap.set(cellId, { value: '', version: 0 });
+            versionsMap.set(cellId, 0);
           }
         }
         setCells(cellsMap);
+        setLocalCellVersions(versionsMap);
         setUsers(roomData.users);
-        setSelectedCell(null);
-        setEditingCell(null);
         break;
       }
-
+      
       case 'user-joined': {
         const { user } = message.payload;
         setUsers((prev) => [...prev.filter((u) => u.id !== user.id), user]);
@@ -87,19 +91,30 @@ function App() {
       case 'cursor-update': {
         const { userId, position } = message.payload;
         setUsers((prev) =>
-          prev.map((u) => (u.id === userId ? { ...u, cursorPosition: position } : u))
+          prev.map((u) => u.id === userId ? { ...u, cursorPosition: position } : u)
         );
         break;
       }
 
       case 'cell-change': {
-        const { row, col, value, formula, calculatedValue } = message.payload;
+        const { row, col, value, formula, calculatedValue, version } = message.payload;
         const cellId = getCellId(col, row);
         setCells((prev) => {
           const newCells = new Map(prev);
-          newCells.set(cellId, { value, formula, calculatedValue });
+          newCells.set(cellId, { value, formula, calculatedValue, version });
           return newCells;
         });
+        setLocalCellVersions((prev) => {
+          const newVersions = new Map(prev);
+          newVersions.set(cellId, version ?? (prev.get(cellId) || 0));
+          return newVersions;
+        });
+        break;
+      }
+
+      case 'cell-conflict': {
+        const conflict: CellConflict = message.payload;
+        setCurrentConflict(conflict);
         break;
       }
 
@@ -120,6 +135,8 @@ function App() {
     leaveRoom,
     updateCursor,
     updateCell,
+    updateCellWithVersion,
+    resolveConflict,
     kickUser
   } = useWebSocket({
     onMessage: handleMessage,
@@ -151,13 +168,15 @@ function App() {
   }, [userName, roomId, joinRoom]);
 
   const handleLeaveRoom = useCallback(() => {
+    // 先发送空的光标位置
+    updateCursor(null, null);
     leaveRoom();
     setView('join');
     setRoom(null);
     setRoomId('');
     setSelectedCell(null);
     setEditingCell(null);
-  }, [leaveRoom]);
+  }, [leaveRoom, updateCursor]);
 
   const handleKickUser = useCallback(
     (userId: string) => {
@@ -184,6 +203,7 @@ function App() {
 
       const cellId = getCellId(col, row);
       const oldCell = cells.get(cellId) || { value: '' };
+      const expectVersion = localCellVersions.get(cellId) || 0;
 
       setCells((prev) => {
         const newCells = new Map(prev);
@@ -192,11 +212,18 @@ function App() {
       });
 
       addEntry(cellId, oldCell.value, value, currentUserId);
-      updateCell(row, col, value);
+      updateCellWithVersion(row, col, value, expectVersion);
       setEditingCell(null);
     },
-    [currentUserId, cells, addEntry, updateCell]
+    [currentUserId, cells, localCellVersions, addEntry, updateCellWithVersion]
   );
+
+  const handleResolveConflict = useCallback((keepLocal: boolean, mergeValue?: string | number) => {
+    if (!currentConflict) return;
+    
+    resolveConflict(currentConflict.row, currentConflict.col, keepLocal, mergeValue);
+    setCurrentConflict(null);
+  }, [currentConflict, resolveConflict]);
 
   const handleCellBlur = useCallback(() => {
     setEditingCell(null);
@@ -465,6 +492,13 @@ function App() {
       >
         Room ID: {room?.id}
       </div>
+
+      {currentConflict && (
+        <ConflictResolver
+          conflict={currentConflict}
+          onResolve={handleResolveConflict}
+        />
+      )}
     </div>
   );
 }

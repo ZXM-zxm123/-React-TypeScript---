@@ -8,7 +8,6 @@ interface CellProps {
   data: CellData;
   isSelected: boolean;
   isEditing: boolean;
-  otherUserCursor?: { color: string; name: string };
   onClick: (row: number, col: number) => void;
   onDoubleClick: (row: number, col: number) => void;
   onChange: (value: string) => void;
@@ -22,7 +21,6 @@ export const Cell = memo(function Cell({
   data,
   isSelected,
   isEditing,
-  otherUserCursor,
   onClick,
   onDoubleClick,
   onChange,
@@ -76,22 +74,6 @@ export const Cell = memo(function Cell({
         >
           {displayValue}
         </span>
-      )}
-
-      {otherUserCursor && (
-        <div
-          style={{
-            position: 'absolute',
-            top: -2,
-            right: -2,
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            backgroundColor: otherUserCursor.color,
-            border: '1px solid white'
-          }}
-          title={otherUserCursor.name}
-        />
       )}
     </div>
   );
